@@ -27,5 +27,4 @@ setup(
     cmdclass=versioneer.get_cmdclass(),
     include_package_data=True,
     package_data={"": extra_files},
-    packages=["bb_astromodels"],
 )
