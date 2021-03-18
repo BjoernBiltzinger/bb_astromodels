@@ -5,19 +5,18 @@ from functools import lru_cache, wraps
 import astropy.units as astropy_units
 import numpy as np
 import six
-from astropy.io import fits
-from scipy.interpolate import interp1d
-
 from astromodels.functions.function import Function1D, FunctionMeta
 from astromodels.utils import configuration
-from bb_astromodels.utils.data_files import _get_data_file_path
-
+from astropy.io import fits
 from numba import njit
-from bb_astromodels.utils.numba_functions import calc_ion_spec_numba
-from bb_astromodels.utils.cache import cache_array_method
+from scipy.interpolate import interp1d
 
-@six.add_metaclass(FunctionMeta)
-class absori(Function1D):
+from bb_astromodels.utils.cache import cache_array_method
+from bb_astromodels.utils.data_files import _get_data_file_path
+from bb_astromodels.utils.numba_functions import calc_ion_spec_numba
+
+
+class Absori(Function1D, metaclass=FunctionMeta):
     r"""
     description :
         Ionized medium absorption (absori implementation from xspec),
@@ -89,9 +88,8 @@ class absori(Function1D):
     def _setup(self):
 
         # the elements in this model
-        self._absori_elements = ["H", "He", "C", "N", "O", \
+        self._absori_elements = ["H", "He", "C", "N", "O",
                                  "Ne", "Mg", "Si", "S", "Fe"]
-
 
         # load database for absori
         self._ion, self._sigma, self._atomicnumber, self._base_energy = self._load_sigma()
@@ -160,10 +158,10 @@ class absori(Function1D):
 
             # change units of coef
 
-            ion[iZ][iIon][1] *= 1.0E+10;
-            ion[iZ][iIon][3] *= 1.0E+04;
-            ion[iZ][iIon][4] *= 1.0E-04;
-            ion[iZ][iIon][6] *= 1.0E-04;
+            ion[iZ][iIon][1] *= 1.0E+10
+            ion[iZ][iIon][3] *= 1.0E+04
+            ion[iZ][iIon][4] *= 1.0E-04
+            ion[iZ][iIon][6] *= 1.0E-04
 
             for k in range(721):
                 sigma[iZ][iIon][k] = sigmadata[i][k]/6.6e-27
@@ -178,7 +176,7 @@ class absori(Function1D):
         with open(_get_data_file_path(
                 os.path.join(
                     "abundance", "abundances.dat"))
-        ) as f:
+                  ) as f:
             rows = f.readlines()
             ele = np.array(rows[0].split(" "), dtype=str)
             ele = ele[ele != ""][1:]
@@ -229,7 +227,7 @@ class absori(Function1D):
 
         return np.exp(-NH*opacity)
 
-    #@cache_array_method(maxsize=1)
+    # @cache_array_method(maxsize=1)
     def _calc_opacity(self, e, temp, xi, gamma, abundance, fe_abundance):
         """
         Calculate the opacity for the given parameters and energies
@@ -243,8 +241,8 @@ class absori(Function1D):
 
         # get abundance TODO check this
         ab = np.copy(self._abundance)
-        ab[2:-1] *= 10**abundance # for elements>He
-        ab[-1] *= 10**fe_abundance # for iron
+        ab[2:-1] *= 10**abundance  # for elements>He
+        ab[-1] *= 10**fe_abundance  # for iron
 
         # weight num by abundance
         num *= ab
@@ -254,7 +252,7 @@ class absori(Function1D):
         # multiply together and sum
         return np.sum(num*sigma, axis=(1, 2))*6.6e-5
 
-    #@cache_array_method(maxsize=1)
+    # @cache_array_method(maxsize=1)
     def _interpolate_sigma(self, ekev):
         """
         Interpolate sigma for the e values
@@ -276,7 +274,8 @@ class absori(Function1D):
         # a powerlaw with slope -3
 
         sigma[~mask] = self._sigma[720]
-        sigma[~mask] *= np.expand_dims(np.power((e[~mask]/self._base_energy[-1]),-3.0), axis=(1,2))
+        sigma[~mask] *= np.expand_dims(np.power((e[~mask] /
+                                                 self._base_energy[-1]), -3.0), axis=(1, 2))
 
         return sigma
 
@@ -287,7 +286,7 @@ class absori(Function1D):
         """
         return calc_ion_spec_numba(gamma, self._base_energy, self._deltaE)
 
-    #@cache_array_method(maxsize=1)
+    # @cache_array_method(maxsize=1)
     def _calc_num(self, spec, temp, xi):
         """
         Calc the num matrix. I don't really understand most of this. I copied the code
@@ -307,7 +306,6 @@ class absori(Function1D):
         num = np.zeros((self._max_atomicnumber,
                         len(self._atomicnumber)))
 
-
         # loop over all types of atoms in the model
         e1 = np.exp(-self._ion[:, :, 4]/t4)
         e2 = np.exp(-self._ion[:, :, 6]/t4)
@@ -318,7 +316,7 @@ class absori(Function1D):
         y = 15.8*z2/t4
         arec2 = tfact*z2*(1.735+np.log(y)+1/(6.*y))
         arec[self._mask_2] = arec2
-        
+
         intgral = np.sum(self._sigma.T*spec, axis=2)
 
         ratio = np.zeros_like(arec)
@@ -346,8 +344,9 @@ class absori(Function1D):
         num[~self._mask_valid.T] = 0
         return num
 
-@six.add_metaclass(FunctionMeta)
-class integrate_absori(absori):
+
+
+class Integrate_Absori(Absori, metaclass=FunctionMeta):
     r"""
     description :
         Integrate ionized medium absorption (absori implementation from xspec) over redshift
@@ -416,11 +415,11 @@ class integrate_absori(absori):
     """
 
     def _setup(self):
-        super(integrate_absori, self)._setup()
+        super(Integrate_Absori, self)._setup()
         self._omegam = 0.3
         self._omegal = 0.7
-        self._h0=70
-        self._cmpermpc=3.08568e24
+        self._h0 = 70
+        self._cmpermpc = 3.08568e24
         self._c = 2.99792458e5
 
     def _set_units(self, x_unit, y_unit):
@@ -442,8 +441,8 @@ class integrate_absori(absori):
         num = self._calc_num(spec, temp, xi)
         # get abundance TODO check this
         ab = np.copy(self._abundance)
-        ab[2:-1] *= 10**abundance # for elements>He
-        ab[-1] *= 10**fe_abundance # for iron
+        ab[2:-1] *= 10**abundance  # for elements>He
+        ab[-1] *= 10**fe_abundance  # for iron
 
         # weight num by abundance
         num *= ab
