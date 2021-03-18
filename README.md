@@ -9,8 +9,9 @@ cd bb_astromodels \
 python setup.py install or python setup.py develop 
 
 => \
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;from bb_astromodels.xray.absorption import absori, integrate_absori
-
+```python
+from bb_astromodels import Absori, Integrate_Absori
+```
 ## References
 
 The implementations in this repository depend on work done by many other people:
