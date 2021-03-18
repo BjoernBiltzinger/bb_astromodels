@@ -22,8 +22,9 @@ extra_files = find_data_files("bb_astromodels/data")
 
 
 setup(
-    name="bb_astromodels",
-    version="0.1",
+    
+    version=versioneer.get_version(),
+    cmdclass=versioneer.get_cmdclass(),
     include_package_data=True,
     package_data={"": extra_files},
     packages=["bb_astromodels"],
