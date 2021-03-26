@@ -86,7 +86,8 @@ class Absori(Function1D, metaclass=FunctionMeta):
     """
 
     def _setup(self):
-
+        self._fixed_units = (
+            astropy_units.keV, astropy_units.dimensionless_unscaled)
         # the elements in this model
         self._absori_elements = ["H", "He", "C", "N", "O",
                                  "Ne", "Mg", "Si", "S", "Fe"]
@@ -210,13 +211,14 @@ class Absori(Function1D, metaclass=FunctionMeta):
         return vals_all
 
     def _set_units(self, x_unit, y_unit):
+
         self.NH.unit = astropy_units.cm ** (-2)
         self.redshift.unit = astropy_units.dimensionless_unscaled
         self.temp.unit = astropy_units.K
         self.gamma.unit = astropy_units.dimensionless_unscaled
         self.xi.unit = astropy_units.dimensionless_unscaled
-        self.abundance = astropy_units.dimensionless_unscaled
-        self.fe_abundance = astropy_units.dimensionless_unscaled
+        self.abundance.unit = astropy_units.dimensionless_unscaled
+        self.fe_abundance.unit = astropy_units.dimensionless_unscaled
 
     def evaluate(self, x, NH, redshift, temp, xi, gamma, abundance, fe_abundance):
         # calc energies with z
@@ -428,8 +430,8 @@ class Integrate_Absori(Absori, metaclass=FunctionMeta):
         self.temp.unit = astropy_units.K
         self.gamma.unit = astropy_units.dimensionless_unscaled
         self.xi.unit = astropy_units.dimensionless_unscaled
-        self.abundance = astropy_units.dimensionless_unscaled
-        self.fe_abundance = astropy_units.dimensionless_unscaled
+        self.abundance.unit = astropy_units.dimensionless_unscaled
+        self.fe_abundance.unit = astropy_units.dimensionless_unscaled
 
     def evaluate(self, x, n0, redshift, temp, xi, gamma, abundance, fe_abundance):
 
