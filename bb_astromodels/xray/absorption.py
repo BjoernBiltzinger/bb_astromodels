@@ -78,7 +78,7 @@ class absori(Function1D):
 
         fe_abundance :
             desc : Abundance of Fe compared to base model (log10(nFe/nFe_basemodel))
-            initial value : 1.0
+            initial value : 0.0
             is_normalization : False
             min : -10
             max : 10
@@ -407,7 +407,7 @@ class integrate_absori(absori):
 
         fe_abundance :
             desc : Abundance of Fe compared to base model (log10(nFe/nFe_basemodel))
-            initial value : 1.0
+            initial value : 0.0
             is_normalization : False
             min : -10
             max : 10
@@ -440,6 +440,7 @@ class integrate_absori(absori):
         zz = zsam*0.5
         spec = self._calc_ion_spec(gamma)
         num = self._calc_num(spec, temp, xi)
+
         # get abundance TODO check this
         ab = np.copy(self._abundance)
         ab[2:-1] *= 10**abundance # for elements>He
@@ -457,10 +458,8 @@ class integrate_absori(absori):
             zf *= zsam*self._c*n0*self._cmpermpc/self._h0
 
             sigma = self._interpolate_sigma(x*z1)
-
             # factor 1*e-22
             xsec = np.sum(num*sigma, axis=(1, 2))*6.6e-5*1e-22
-
             taus += xsec*zf
             zz += zsam
 
