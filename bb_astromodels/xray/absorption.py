@@ -263,21 +263,25 @@ class Absori(Function1D, metaclass=FunctionMeta):
 
         sigma = np.zeros((len(e), self._sigma.shape[1], self._sigma.shape[2]))
 
-        # we have to split in two parts. e>max(base_energy)
-        # and e<max(base_energy)
-        mask = e < self._base_energy[-1]
+        # we have to split in three parts. e>max(base_energy)
+        # and e<min(base_energy) and rest
+        mask1 = e > self._base_energy[-1]
+        mask2 = e < self._base_energy[0]
 
+        mask3 = (~mask1)*(~mask2)
         # for mask true use simple interpolation between
         # the base energy values
 
-        sigma[mask] = self._interp_sigma(e[mask])
+        sigma[mask3] = self._interp_sigma(e[mask3])
 
         # for mask false extend the sigma at the highest energy base value with
         # a powerlaw with slope -3
 
-        sigma[~mask] = self._sigma[720]
-        sigma[~mask] *= np.expand_dims(np.power((e[~mask] /
+        sigma[mask1] = self._sigma[720]
+        sigma[mask1] *= np.expand_dims(np.power((e[mask1] /
                                                  self._base_energy[-1]), -3.0), axis=(1, 2))
+
+        sigma[mask2] = self._sigma[0]
 
         return sigma
 
