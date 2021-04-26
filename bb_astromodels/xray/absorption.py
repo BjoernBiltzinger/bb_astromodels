@@ -374,7 +374,7 @@ class Integrate_Absori(Absori, metaclass=FunctionMeta):
             min : -10
             max : 10
             delta : 0.1
-            fixed: True
+            fix: True
 
         redshift :
             desc : the redshift of the source
