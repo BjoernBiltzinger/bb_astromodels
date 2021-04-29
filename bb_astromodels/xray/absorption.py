@@ -422,9 +422,9 @@ class Integrate_Absori(Absori, metaclass=FunctionMeta):
 
     def _setup(self):
         super(Integrate_Absori, self)._setup()
-        self._omegam = 0.3
-        self._omegal = 0.7
-        self._h0 = 70
+        self._omegam = 0.307
+        self._omegal = 0.693
+        self._h0 = 67.7
         self._cmpermpc = 3.08568e24
         self._c = 2.99792458e5
 
