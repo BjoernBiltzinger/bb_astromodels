@@ -367,6 +367,15 @@ class Integrate_Absori(Absori, metaclass=FunctionMeta):
             max : 1
             delta : 0.1
 
+        delta :
+            desc: delta parameter for the density evolution with z => n(r)=n0*(1+z)^delta
+            initial value : 0
+            is_normalization : False
+            min : -10
+            max : 10
+            delta : 0.1
+            fix: True
+
         redshift :
             desc : the redshift of the source
             initial value : 0.
@@ -430,6 +439,7 @@ class Integrate_Absori(Absori, metaclass=FunctionMeta):
 
     def _set_units(self, x_unit, y_unit):
         self.n0.unit = astropy_units.cm ** (-3)
+        self.delta.unit = astropy_units.dimensionless_unscaled
         self.redshift.unit = astropy_units.dimensionless_unscaled
         self.temp.unit = astropy_units.K
         self.gamma.unit = astropy_units.dimensionless_unscaled
@@ -437,7 +447,7 @@ class Integrate_Absori(Absori, metaclass=FunctionMeta):
         self.abundance.unit = astropy_units.dimensionless_unscaled
         self.fe_abundance.unit = astropy_units.dimensionless_unscaled
 
-    def evaluate(self, x, n0, redshift, temp, xi, gamma, abundance, fe_abundance):
+    def evaluate(self, x, n0, delta, redshift, temp, xi, gamma, abundance, fe_abundance):
 
         # define z shells
         nz = int(redshift/0.02)
@@ -459,8 +469,10 @@ class Integrate_Absori(Absori, metaclass=FunctionMeta):
 
         for i in range(nz):
             z1 = zz+1.0
+            # n in this shell
+            n = n0*z1**delta
             zf = (z1**2/np.sqrt(self._omegam*z1**3+self._omegal))
-            zf *= zsam*self._c*n0*self._cmpermpc/self._h0
+            zf *= zsam*self._c*n*self._cmpermpc/self._h0
 
             sigma = self._interpolate_sigma(x*z1)
             # factor 1*e-22
