@@ -236,10 +236,10 @@ class Absori(Function1D, metaclass=FunctionMeta):
         """
 
         # calc the ionizing spectrum
-        spec = self._calc_ion_spec(gamma)
+        #spec = self._calc_ion_spec(gamma)
 
         # get the num matrix
-        num = self._calc_num(spec, temp, xi)
+        num = self._calc_num(gamma, temp, xi)
 
         # get abundance TODO check this
         ab = np.copy(self._abundance)
@@ -254,7 +254,7 @@ class Absori(Function1D, metaclass=FunctionMeta):
         # multiply together and sum
         return np.sum(num*sigma, axis=(1, 2))*6.6e-5
 
-    # @cache_array_method(maxsize=1)
+    #@cache_array_method(maxsize=1000)
     def _interpolate_sigma(self, ekev):
         """
         Interpolate sigma for the e values
@@ -285,20 +285,21 @@ class Absori(Function1D, metaclass=FunctionMeta):
 
         return sigma
 
-    @lru_cache(maxsize=1)
+    @lru_cache(maxsize=4)
     def _calc_ion_spec(self, gamma):
         """
         Calc the F(E)*deltaE at the grid energies of the base energies.
         """
         return calc_ion_spec_numba(gamma, self._base_energy, self._deltaE)
 
-    # @cache_array_method(maxsize=1)
-    def _calc_num(self, spec, temp, xi):
+    @lru_cache(maxsize=4)
+    def _calc_num(self, gamma, temp, xi):
         """
         Calc the num matrix. I don't really understand most of this. I copied the code
         from xspec and vectrorized most of the calc for speed. Tested to give the same result
         like xspec.
         """
+        spec = self._calc_ion_spec(gamma)
         # transform temp to units of 10**4 K
         t4 = 0.0001*temp
         tfact = 1.033E-3/np.sqrt(t4)
@@ -436,6 +437,30 @@ class Integrate_Absori(Absori, metaclass=FunctionMeta):
         self._h0 = 70
         self._cmpermpc = 3.08568e24
         self._c = 2.99792458e5
+        self._last_x_sum = 0
+        self._last_z = None
+        #self._2last_x_sum = 0
+        #self._2last_z = None
+        #self._3last_x_sum = 0
+        #self._3last_z = None
+        self._last_sigma_all = None
+        #self._last_sigma_all2 = None
+        #self._last_sigma_all3 = None
+        self._xsec_precalc = None
+        #self._xsec_precalc2 = None
+        #self._xsec_precalc3 = None
+        self._last_gamma = None
+        self._last_temp = None
+        self._last_xi = None
+        #if self.redshift.fixed == True:
+        #    # precalc the sigma interpolation
+        #    nz = int(self.redshift/0.02)
+        #    zsam = self.redshift/nz
+        #    zz = zsam*0.5
+        #    sigma = np.zeros((nz, len(e), self._sigma.shape[1], self._sigma.shape[2]))
+        #    for i in range(nz):
+        #        z1 = zz+1.0
+        #        sigma[i] = self._interpolate_sigma(x*z1)
 
     def _set_units(self, x_unit, y_unit):
         self.n0.unit = astropy_units.cm ** (-3)
@@ -443,18 +468,28 @@ class Integrate_Absori(Absori, metaclass=FunctionMeta):
         self.redshift.unit = astropy_units.dimensionless_unscaled
         self.temp.unit = astropy_units.K
         self.gamma.unit = astropy_units.dimensionless_unscaled
-        self.xi.unit = astropy_units.dimensionless_unscaled
+        self.xi.unit = astropy_units.erg*astropy_units.cm*astropy_units.s**(-1)
         self.abundance.unit = astropy_units.dimensionless_unscaled
         self.fe_abundance.unit = astropy_units.dimensionless_unscaled
 
-    def evaluate(self, x, n0, delta, redshift, temp, xi, gamma, abundance, fe_abundance):
+    @lru_cache(maxsize=5)
+    def _interpolate_sigma_all(self, ekev):
+        print("Hallo")
+        sigma_all = np.zeros((self._nz, len(ekev), self._sigma.shape[1], self._sigma.shape[2]))
+        zz = 0.5*self._zsam
+        for i in range(self._nz):
+                z1 = zz+1.0
+                sigma_all[i] = self._interpolate_sigma(ekev*z1)
+                zz += self._zsam
+        return sigma_all
 
+    def evaluate(self, x, n0, delta, redshift, temp, xi, gamma, abundance, fe_abundance):
         # define z shells
         nz = int(redshift/0.02)
         zsam = redshift/nz
         zz = zsam*0.5
-        spec = self._calc_ion_spec(gamma)
-        num = self._calc_num(spec, temp, xi)
+        #spec = self._calc_ion_spec(gamma)
+        num = self._calc_num(gamma, temp, xi)
 
         # get abundance TODO check this
         ab = np.copy(self._abundance)
@@ -462,10 +497,83 @@ class Integrate_Absori(Absori, metaclass=FunctionMeta):
         ab[-1] *= 10**fe_abundance  # for iron
 
         # weight num by abundance
-        num *= ab
-
+        num_ab = num*ab
         # array with the taus for alle energies
         taus = np.zeros(len(x))
+
+        #self._z = redshift
+        #self._nz = nz
+        #self._zsam = zsam
+        #sigma_all = self._interpolate_sigma_all(x)
+
+        ################## Some kind of caching of the last calls (last 3 for the sigma interp, because 3ML calls the function on the edges and on the middle of the ebins for
+        ################## simpson integration)... Have to improve this at some point
+
+        if self._last_gamma == gamma and self._last_temp == temp and self._last_xi == xi:
+            new_num = False
+        else:
+            new_num = True
+            self._last_gamma = gamma
+            self._last_temp = temp
+            self._last_xi = xi
+
+        new_sigma_interp = True
+
+        sum_x = np.sum(x)
+        #if np.all(self._last_x == x):
+        if self._last_x_sum == sum_x:
+            if self._last_z == redshift:
+                #everything stayed the same
+                #sigma_all = self._last_sigma_all
+                #xsec_precalc = self._xsec_precalc
+                new_sigma_interp = False
+        if new_sigma_interp:
+            self._last_z = redshift
+            self._last_x_sum = sum_x
+        #if np.all(self._2last_x == x):
+        #if self._2last_x_sum == sum_x:
+        #    if self._2last_z == redshift:
+        #        #everything stayed the same
+        #        #xsec_precalc = self._xsec_precalc2
+        #        sigma_all = self._last_sigma_all2
+        #        new_sigma_interp = False
+        #if np.all(self._3last_x == x):
+        #if self._3last_x_sum == sum_x:
+        #    if self._3last_z == redshift:
+        #        #everything stayed the same
+        #        sigma_all = self._last_sigma_all3
+        #        #xsec_precalc = self._xsec_precalc3
+        #        new_sigma_interp = False
+        if new_sigma_interp or new_num:
+            #self._3last_z = self._2last_z
+            #self._3last_x_sum = self._2last_x_sum
+            #self._2last_z = self._last_z
+            #self._2last_x_sum = self._last_x_sum
+            # something changed we have to recalc the sigma interpolation
+            #self._last_sigma_all3 = self._last_sigma_all2
+            #self._last_sigma_all2 = self._last_sigma_all
+            if new_sigma_interp:
+                self._last_sigma_all = np.zeros((nz, len(x), self._sigma.shape[1], self._sigma.shape[2]))
+
+            #self._xsec_precalc3 = self._xsec_precalc2
+            #self._xsec_precalc2 = self._xsec_precalc
+            self._xsec_precalc = np.zeros((nz, len(x)))
+            for i in range(nz):
+                z1 = zz+1.0
+                if new_sigma_interp:
+                    self._last_sigma_all[i] = self._interpolate_sigma(x*z1)
+                    self._xsec_precalc[i] = np.sum(num_ab*self._last_sigma_all[i], axis=(1, 2))*6.6e-5*1e-22
+                else:
+
+                    self._xsec_precalc[i] = np.sum(num_ab*self._last_sigma_all[i], axis=(1, 2))*6.6e-5*1e-22
+                #self._last_sigma_all[i] = self._interpolate_sigma(x*z1)
+                zz += zsam
+            #xsec_precalc = self._xsec_precalc
+            #sigma_all = self._last_sigma_all
+            zz = zsam*0.5
+        xsec_precalc = self._xsec_precalc
+
+        #################################################
 
         for i in range(nz):
             z1 = zz+1.0
@@ -474,10 +582,10 @@ class Integrate_Absori(Absori, metaclass=FunctionMeta):
             zf = (z1**2/np.sqrt(self._omegam*z1**3+self._omegal))
             zf *= zsam*self._c*n*self._cmpermpc/self._h0
 
-            sigma = self._interpolate_sigma(x*z1)
-            # factor 1*e-22
-            xsec = np.sum(num*sigma, axis=(1, 2))*6.6e-5*1e-22
-            taus += xsec*zf
+            #sigma = self._interpolate_sigma(x)
+            #xsec = np.sum(num_ab*sigma, axis=(1, 2))*6.6e-5*1e-22
+
+            taus += xsec_precalc[i]*zf
             zz += zsam
 
         return np.exp(-taus)
