@@ -112,7 +112,7 @@ class Absori(Function1D, metaclass=FunctionMeta):
             self._base_energy,
         ) = self._load_sigma()
 
-         self._last_gamma = 1e-99
+        self._last_gamma = 1e-99
 
         self._max_atomicnumber = int(np.max(self._atomicnumber))
 
@@ -320,11 +320,13 @@ class Absori(Function1D, metaclass=FunctionMeta):
 
         if gamma != self._last_gamma:
 
-            self._last_ion_spec = calc_ion_spec_numba(gamma, self._base_energy, self._deltaE)
+            self._last_ion_spec = calc_ion_spec_numba(
+                gamma, self._base_energy, self._deltaE
+            )
 
         else:
 
-            print('YAY')
+            print("YAY")
 
         return self._last_ion_spec
 
