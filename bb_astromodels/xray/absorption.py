@@ -112,6 +112,8 @@ class Absori(Function1D, metaclass=FunctionMeta):
             self._base_energy,
         ) = self._load_sigma()
 
+         self._last_gamma = 1e-99
+
         self._max_atomicnumber = int(np.max(self._atomicnumber))
 
         self._sigma = self._sigma.T
@@ -315,7 +317,16 @@ class Absori(Function1D, metaclass=FunctionMeta):
         """
         Calc the F(E)*deltaE at the grid energies of the base energies.
         """
-        return calc_ion_spec_numba(gamma, self._base_energy, self._deltaE)
+
+        if gamma != self._last_gamma:
+
+            self._last_ion_spec = calc_ion_spec_numba(gamma, self._base_energy, self._deltaE)
+
+        else:
+
+            print('YAY')
+
+        return self._last_ion_spec
 
     # @cache_array_method(maxsize=1)
     def _calc_num(self, spec, temp, xi):
