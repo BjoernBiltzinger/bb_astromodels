@@ -1,6 +1,7 @@
 import os
 import sys
 from functools import lru_cache, wraps
+from collections import OrderedDict
 
 import astropy.units as astropy_units
 import numpy as np
@@ -112,7 +113,7 @@ class Absori(Function1D, metaclass=FunctionMeta):
             self._base_energy,
         ) = self._load_sigma()
 
-        self._last_gamma = 1e-99
+        self._cache = OrderedDict()
 
         self._max_atomicnumber = int(np.max(self._atomicnumber))
 
@@ -318,17 +319,22 @@ class Absori(Function1D, metaclass=FunctionMeta):
         Calc the F(E)*deltaE at the grid energies of the base energies.
         """
 
-        if gamma != self._last_gamma:
+        try:
 
-            self._last_ion_spec = calc_ion_spec_numba(
-                gamma, self._base_energy, self._deltaE
-            )
+            value = self._cache[gamma]
+            self._cache.move_to_end(gamma)
 
-        else:
+        except KeyError:
 
-            print("YAY")
+            value = calc_ion_spec_numba(gamma, self._base_energy, self._deltaE)
 
-        return self._last_ion_spec
+            if len(self._cache) > 1:
+
+                self._cache.popitem(False)
+
+            self._cache[gamma] = value
+
+        return value
 
     # @cache_array_method(maxsize=1)
     def _calc_num(self, spec, temp, xi):
