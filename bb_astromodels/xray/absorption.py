@@ -91,6 +91,10 @@ class Absori(Function1D, metaclass=FunctionMeta):
             astropy_units.keV,
             astropy_units.dimensionless_unscaled,
         )
+
+        self._cache_ion_spec = OrderedDict()
+        self._cache_num = OrderedDict()
+
         # the elements in this model
         self._absori_elements = [
             "H",
@@ -112,9 +116,6 @@ class Absori(Function1D, metaclass=FunctionMeta):
             self._atomicnumber,
             self._base_energy,
         ) = self._load_sigma()
-
-        self._cache_ion_spec = OrderedDict()
-        self._cache_num = OrderedDict()
 
         self._max_atomicnumber = int(np.max(self._atomicnumber))
 
@@ -314,12 +315,11 @@ class Absori(Function1D, metaclass=FunctionMeta):
 
         return sigma
 
-    #    @lru_cache(maxsize=1)
+    #    @lru_cache(maxsize=4)
     def _calc_ion_spec(self, gamma):
         """
         Calc the F(E)*deltaE at the grid energies of the base energies.
         """
-
         try:
 
             value = self._cache_ion_spec[gamma]
@@ -329,7 +329,7 @@ class Absori(Function1D, metaclass=FunctionMeta):
 
             value = calc_ion_spec_numba(gamma, self._base_energy, self._deltaE)
 
-            if len(self._cache_ion_spec) > 1:
+            if len(self._cache_ion_spec) > 4:
 
                 self._cache_ion_spec.popitem(False)
 
@@ -337,14 +337,13 @@ class Absori(Function1D, metaclass=FunctionMeta):
 
         return value
 
-    #    @lru_cache(maxsize=4)
+    #   @lru_cache(maxsize=4)
     def _calc_num(self, gamma, temp, xi):
         """
         Calc the num matrix. I don't really understand most of this. I copied the code
         from xspec and vectrorized most of the calc for speed. Tested to give the same result
         like xspec.
         """
-
         key = f"{gamma}_{temp}_{xi}"
 
         try:
@@ -410,7 +409,7 @@ class Absori(Function1D, metaclass=FunctionMeta):
 
             value = num
 
-            if len(self._cache_ion_spec) > 4:
+            if len(self._cache_num) > 4:
 
                 self._cache_num.popitem(False)
 
@@ -540,6 +539,19 @@ class Integrate_Absori(Absori, metaclass=FunctionMeta):
         self.abundance.unit = astropy_units.dimensionless_unscaled
         self.fe_abundance.unit = astropy_units.dimensionless_unscaled
 
+    @lru_cache(maxsize=5)
+    def _interpolate_sigma_all(self, ekev):
+        print("Hallo")
+        sigma_all = np.zeros(
+            (self._nz, len(ekev), self._sigma.shape[1], self._sigma.shape[2])
+        )
+        zz = 0.5 * self._zsam
+        for i in range(self._nz):
+            z1 = zz + 1.0
+            sigma_all[i] = self._interpolate_sigma(ekev * z1)
+            zz += self._zsam
+        return sigma_all
+
     def evaluate(
         self, x, n0, delta, redshift, temp, xi, gamma, abundance, fe_abundance
     ):
@@ -655,10 +667,10 @@ class Integrate_Absori(Absori, metaclass=FunctionMeta):
             zf = z1 ** 2 / np.sqrt(self._omegam * z1 ** 3 + self._omegal)
             zf *= zsam * self._c * n * self._cmpermpc / self._h0
 
-            sigma = self._interpolate_sigma(x * z1)
-            # factor 1*e-22
-            xsec = np.sum(num * sigma, axis=(1, 2)) * 6.6e-5 * 1e-22
-            taus += xsec * zf
+            # sigma = self._interpolate_sigma(x)
+            # xsec = np.sum(num_ab*sigma, axis=(1, 2))*6.6e-5*1e-22
+
+            taus += xsec_precalc[i] * zf
             zz += zsam
 
         return np.exp(-taus)
