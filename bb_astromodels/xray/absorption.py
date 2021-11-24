@@ -113,7 +113,8 @@ class Absori(Function1D, metaclass=FunctionMeta):
             self._base_energy,
         ) = self._load_sigma()
 
-        self._cache = OrderedDict()
+        self._cache_ion_spec = OrderedDict()
+        self._cache_num = OrderedDict()
 
         self._max_atomicnumber = int(np.max(self._atomicnumber))
 
@@ -321,82 +322,101 @@ class Absori(Function1D, metaclass=FunctionMeta):
 
         try:
 
-            value = self._cache[gamma]
-            self._cache.move_to_end(gamma)
+            value = self._cache_ion_spec[gamma]
+            self._cache_ion_spec.move_to_end(gamma)
 
         except KeyError:
 
             value = calc_ion_spec_numba(gamma, self._base_energy, self._deltaE)
 
-            if len(self._cache) > 1:
+            if len(self._cache_ion_spec) > 1:
 
-                self._cache.popitem(False)
+                self._cache_ion_spec.popitem(False)
 
-            self._cache[gamma] = value
+            self._cache_ion_spec[gamma] = value
 
         return value
 
-    @lru_cache(maxsize=4)
+    #    @lru_cache(maxsize=4)
     def _calc_num(self, gamma, temp, xi):
         """
         Calc the num matrix. I don't really understand most of this. I copied the code
         from xspec and vectrorized most of the calc for speed. Tested to give the same result
         like xspec.
         """
-        spec = self._calc_ion_spec(gamma)
-        # transform temp to units of 10**4 K
-        t4 = 0.0001 * temp
-        tfact = 1.033e-3 / np.sqrt(t4)
 
-        # log of xi
-        if xi <= 0:
-            xil = -100.0
-        else:
-            xil = np.log(xi)
+        key = f"{gamma}_{temp}_{xi}"
 
-        num = np.zeros((self._max_atomicnumber, len(self._atomicnumber)))
+        try:
 
-        # loop over all types of atoms in the model
-        e1 = np.exp(-self._ion[:, :, 4] / t4)
-        e2 = np.exp(-self._ion[:, :, 6] / t4)
-        arec = self._ion[:, :, 1] * np.power(
-            t4, -self._ion[:, :, 2]
-        ) + self._ion[:, :, 3] * np.power(t4, -1.5) * e1 * (
-            1.0 + self._ion[:, :, 5] * e2
-        )
-        z2 = self._atomicnumber ** 2
-        y = 15.8 * z2 / t4
-        arec2 = tfact * z2 * (1.735 + np.log(y) + 1 / (6.0 * y))
-        arec[self._mask_2] = arec2
+            value = self._cache_num[key]
+            self._cache_num.move_to_end(key)
 
-        intgral = np.sum(self._sigma.T * spec, axis=2)
+        except KeyError:
 
-        ratio = np.zeros_like(arec)
+            spec = self._calc_ion_spec(gamma)
+            # transform temp to units of 10**4 K
+            t4 = 0.0001 * temp
+            tfact = 1.033e-3 / np.sqrt(t4)
 
-        ratio[arec != 0] = np.log(
-            3.2749e-6 * intgral[arec != 0] / arec[arec != 0]
-        )
-        # ratio = np.log(3.2749e-6*intgral/arec)
-        # ratio[arec == 0] = 0
-        ratcumsum = np.cumsum(ratio, axis=1)
+            # log of xi
+            if xi <= 0:
+                xil = -100.0
+            else:
+                xil = np.log(xi)
 
-        mul = ratcumsum + (np.arange(1, self._max_atomicnumber + 1)) * xil
-        mul[~self._mask_valid] = -(10 ** 99)
-        mult = np.max(mul, axis=1)
-        mul = (mul.T - mult).T
-        emul = np.exp(mul)
-        emul[~self._mask_valid] = 0
+            num = np.zeros((self._max_atomicnumber, len(self._atomicnumber)))
 
-        s = np.sum(emul, axis=1)
+            # loop over all types of atoms in the model
+            e1 = np.exp(-self._ion[:, :, 4] / t4)
+            e2 = np.exp(-self._ion[:, :, 6] / t4)
+            arec = self._ion[:, :, 1] * np.power(
+                t4, -self._ion[:, :, 2]
+            ) + self._ion[:, :, 3] * np.power(t4, -1.5) * e1 * (
+                1.0 + self._ion[:, :, 5] * e2
+            )
+            z2 = self._atomicnumber ** 2
+            y = 15.8 * z2 / t4
+            arec2 = tfact * z2 * (1.735 + np.log(y) + 1 / (6.0 * y))
+            arec[self._mask_2] = arec2
 
-        s += np.exp(-mult)
-        num[0] = -mult - np.log(s)
-        for j in range(1, 26):
-            num[j] = num[j - 1] + ratio[:, j - 1] + xil
+            intgral = np.sum(self._sigma.T * spec, axis=2)
 
-        num = np.exp(num)
-        num[~self._mask_valid.T] = 0
-        return num
+            ratio = np.zeros_like(arec)
+
+            ratio[arec != 0] = np.log(
+                3.2749e-6 * intgral[arec != 0] / arec[arec != 0]
+            )
+            # ratio = np.log(3.2749e-6*intgral/arec)
+            # ratio[arec == 0] = 0
+            ratcumsum = np.cumsum(ratio, axis=1)
+
+            mul = ratcumsum + (np.arange(1, self._max_atomicnumber + 1)) * xil
+            mul[~self._mask_valid] = -(10 ** 99)
+            mult = np.max(mul, axis=1)
+            mul = (mul.T - mult).T
+            emul = np.exp(mul)
+            emul[~self._mask_valid] = 0
+
+            s = np.sum(emul, axis=1)
+
+            s += np.exp(-mult)
+            num[0] = -mult - np.log(s)
+            for j in range(1, 26):
+                num[j] = num[j - 1] + ratio[:, j - 1] + xil
+
+            num = np.exp(num)
+            num[~self._mask_valid.T] = 0
+
+            value = num
+
+            if len(self._cache_ion_spec) > 4:
+
+                self._cache_num.popitem(False)
+
+            self._cache_num[key] = value
+
+        return value
 
 
 class Integrate_Absori(Absori, metaclass=FunctionMeta):
@@ -520,10 +540,6 @@ class Integrate_Absori(Absori, metaclass=FunctionMeta):
         self.abundance.unit = astropy_units.dimensionless_unscaled
         self.fe_abundance.unit = astropy_units.dimensionless_unscaled
 
-    # def evaluate(
-    #     self, x, n0, delta, redshift, temp, xi, gamma, abundance, fe_abundance
-    # ):
-
     def evaluate(
         self, x, n0, delta, redshift, temp, xi, gamma, abundance, fe_abundance
     ):
@@ -531,8 +547,8 @@ class Integrate_Absori(Absori, metaclass=FunctionMeta):
         nz = int(redshift / 0.02)
         zsam = redshift / nz
         zz = zsam * 0.5
-        spec = self._calc_ion_spec(gamma)
-        num = self._calc_num(spec, temp, xi)
+        # spec = self._calc_ion_spec(gamma)
+        num = self._calc_num(gamma, temp, xi)
 
         # get abundance TODO check this
         ab = np.copy(self._abundance)
