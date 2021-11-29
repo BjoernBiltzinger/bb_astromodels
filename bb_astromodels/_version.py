@@ -42,7 +42,7 @@ def get_config():
     cfg.VCS = "git"
     cfg.style = "pep440"
     cfg.tag_prefix = "v"
-    cfg.parentdir_prefix = "pynchrotron-"
+    cfg.parentdir_prefix = "bb_astromodels-"
     cfg.versionfile_source = "bb_astromodels/_version.py"
     cfg.verbose = False
     return cfg
