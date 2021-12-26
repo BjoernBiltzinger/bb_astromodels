@@ -3,6 +3,8 @@ import sys
 from functools import lru_cache, wraps
 from collections import OrderedDict
 
+from numpy.lib.function_base import interp
+
 import astropy.units as astropy_units
 import numpy as np
 import six
@@ -12,7 +14,9 @@ from astropy.io import fits
 from numba import njit
 from scipy.interpolate import interp1d
 
-from bb_astromodels.utils.cache import cache_array_method
+# from interpolation import interp
+
+# from bb_astromodels.utils.cache import cache_array_method
 from bb_astromodels.utils.data_files import _get_data_file_path
 from bb_astromodels.utils.numba_functions import calc_ion_spec_numba
 
@@ -135,6 +139,8 @@ class Absori(Function1D, metaclass=FunctionMeta):
 
         # build the interpolation of sigma
         self._interp_sigma = interp1d(self._base_energy, self._sigma, axis=0)
+
+        # self._interp_sigma = Interp1D(self._base_energy, self._sigma)
 
         # precalc the "deltaE" per ebin in the base energy
         self._deltaE = np.zeros(len(self._base_energy))
@@ -288,32 +294,31 @@ class Absori(Function1D, metaclass=FunctionMeta):
         """
         Interpolate sigma for the e values
         """
-        e = 1000 * ekev
-
-        sigma = np.zeros((len(e), self._sigma.shape[1], self._sigma.shape[2]))
-
-        # we have to split in three parts. e>max(base_energy)
-        # and e<min(base_energy) and rest
-        mask1 = e > self._base_energy[-1]
-        mask2 = e < self._base_energy[0]
-
-        mask3 = (~mask1) * (~mask2)
+        e, mask1, mask2, mask3, new_sigma = _interp_part1(
+            ekev, self._sigma, self._base_energy
+        )
         # for mask true use simple interpolation between
         # the base energy values
 
-        sigma[mask3] = self._interp_sigma(e[mask3])
+        # sigma[mask3] = interp(self._base_energy, self._sigma, e[mask3])
+
+        new_sigma[mask3] = self._interp_sigma(e[mask3])
 
         # for mask false extend the sigma at the highest energy base value with
         # a powerlaw with slope -3
 
-        sigma[mask1] = self._sigma[720]
-        sigma[mask1] *= np.expand_dims(
+        # return _interp_part2(
+        #     new_sigma, mask1, mask2, self._sigma, self._base_energy, e
+        # )
+
+        new_sigma[mask1] = self._sigma[720]
+        new_sigma[mask1] *= np.expand_dims(
             np.power((e[mask1] / self._base_energy[-1]), -3.0), axis=(1, 2)
         )
 
-        sigma[mask2] = self._sigma[0]
+        new_sigma[mask2] = self._sigma[0]
 
-        return sigma
+        return new_sigma
 
     #    @lru_cache(maxsize=4)
     def _calc_ion_spec(self, gamma):
@@ -321,9 +326,10 @@ class Absori(Function1D, metaclass=FunctionMeta):
         Calc the F(E)*deltaE at the grid energies of the base energies.
         """
         try:
-
+            # print(gamma)
             value = self._cache_ion_spec[gamma]
             self._cache_ion_spec.move_to_end(gamma)
+            # print("cache hit")
 
         except KeyError:
 
@@ -350,7 +356,7 @@ class Absori(Function1D, metaclass=FunctionMeta):
 
             value = self._cache_num[key]
             self._cache_num.move_to_end(key)
-
+            # print("cache hit num")
         except KeyError:
 
             spec = self._calc_ion_spec(gamma)
@@ -539,18 +545,18 @@ class Integrate_Absori(Absori, metaclass=FunctionMeta):
         self.abundance.unit = astropy_units.dimensionless_unscaled
         self.fe_abundance.unit = astropy_units.dimensionless_unscaled
 
-    @lru_cache(maxsize=5)
-    def _interpolate_sigma_all(self, ekev):
-        print("Hallo")
-        sigma_all = np.zeros(
-            (self._nz, len(ekev), self._sigma.shape[1], self._sigma.shape[2])
-        )
-        zz = 0.5 * self._zsam
-        for i in range(self._nz):
-            z1 = zz + 1.0
-            sigma_all[i] = self._interpolate_sigma(ekev * z1)
-            zz += self._zsam
-        return sigma_all
+    # @lru_cache(maxsize=5)
+    # def _interpolate_sigma_all(self, ekev):
+    #     print("Hallo")
+    #     sigma_all = np.zeros(
+    #         (self._nz, len(ekev), self._sigma.shape[1], self._sigma.shape[2])
+    #     )
+    #     zz = 0.5 * self._zsam
+    #     for i in range(self._nz):
+    #         z1 = zz + 1.0
+    #         sigma_all[i] = self._interpolate_sigma(ekev * z1)
+    #         zz += self._zsam
+    #     return sigma_all
 
     def evaluate(
         self, x, n0, delta, redshift, temp, xi, gamma, abundance, fe_abundance
@@ -594,7 +600,7 @@ class Integrate_Absori(Absori, metaclass=FunctionMeta):
 
         new_sigma_interp = True
 
-        sum_x = np.sum(x)
+        sum_x = _sum(x)
         # if np.all(self._last_x == x):
         if self._last_x_sum == sum_x:
             if self._last_z == redshift:
@@ -659,18 +665,81 @@ class Integrate_Absori(Absori, metaclass=FunctionMeta):
         xsec_precalc = self._xsec_precalc
 
         #################################################
+        taus = _integrate_z1(
+            nz,
+            zz,
+            n0,
+            delta,
+            self._omegam,
+            self._omegal,
+            zsam,
+            taus,
+            self._c,
+            self._cmpermpc,
+            self._h0,
+            xsec_precalc,
+        )
 
-        for i in range(nz):
-            z1 = zz + 1.0
-            # n in this shell
-            n = n0 * z1 ** delta
-            zf = z1 ** 2 / np.sqrt(self._omegam * z1 ** 3 + self._omegal)
-            zf *= zsam * self._c * n * self._cmpermpc / self._h0
+        return _exp(-taus)
 
-            # sigma = self._interpolate_sigma(x)
-            # xsec = np.sum(num_ab*sigma, axis=(1, 2))*6.6e-5*1e-22
 
-            taus += xsec_precalc[i] * zf
-            zz += zsam
+@njit(fastmath=True)
+def _sum(x):
 
-        return np.exp(-taus)
+    return np.sum(x)
+
+
+@njit(fastmath=True)
+def _exp(x):
+
+    return np.exp(x)
+
+
+@njit(fastmath=True)
+def _integrate_z1(
+    nz, zz, n0, delta, omegam, omegal, zsam, taus, c, cmpermpc, h0, xsec_precalc
+):
+    for i in range(nz):
+        z1 = zz + 1.0
+        # n in this shell
+        n = n0 * z1 ** delta
+        zf = z1 ** 2 / np.sqrt(omegam * z1 ** 3 + omegal)
+        zf *= zsam * c * n * cmpermpc / h0
+
+        # sigma = self._interpolate_sigma(x)
+        # xsec = np.sum(num_ab*sigma, axis=(1, 2))*6.6e-5*1e-22
+
+        taus += xsec_precalc[i] * zf
+        zz += zsam
+
+    return taus
+
+
+@njit(fastmath=True)
+def _interp_part1(ekev, sigma, base_energy):
+
+    e = 1000 * ekev
+
+    new_sigma = np.zeros((len(e), sigma.shape[1], sigma.shape[2]))
+
+    # we have to split in three parts. e>max(base_energy)
+    # and e<min(base_energy) and rest
+    mask1 = e > base_energy[-1]
+    mask2 = e < base_energy[0]
+
+    mask3 = (~mask1) * (~mask2)
+
+    return e, mask1, mask2, mask3, new_sigma
+
+
+@njit(fastmath=True)
+def _interp_part2(new_sigma, mask1, mask2, sigma, base_energy, e):
+
+    new_sigma[mask1] = sigma[720]
+    new_sigma[mask1] *= np.expand_dims(
+        np.power((e[mask1] / base_energy[-1]), -3.0), axis=(1, 2)
+    )
+
+    new_sigma[mask2] = sigma[0]
+
+    return new_sigma
