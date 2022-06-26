@@ -1,24 +1,139 @@
+import collections
 import os
-import sys
-from functools import lru_cache, wraps
 from collections import OrderedDict
-
-from numpy.lib.function_base import interp
+from dataclasses import dataclass
 
 import astropy.units as astropy_units
 import numpy as np
-import six
 from astromodels.functions.function import Function1D, FunctionMeta
 from astromodels.utils import configuration
 from astropy.io import fits
-from numba import njit
-from scipy.interpolate import interp1d
-
-# from interpolation import interp
-
 # from bb_astromodels.utils.cache import cache_array_method
 from bb_astromodels.utils.data_files import _get_data_file_path
 from bb_astromodels.utils.numba_functions import calc_ion_spec_numba
+from numba import njit
+from scipy.interpolate import interp1d
+
+from .interp import UnivariateSpline
+from .numba_sum import numba_sum
+
+# from interpolation import interp
+
+
+class AbundanceData:
+    def __init__(self):
+
+        # the elements in this model
+        self._absori_elements = [
+            "H",
+            "He",
+            "C",
+            "N",
+            "O",
+            "Ne",
+            "Mg",
+            "Si",
+            "S",
+            "Fe",
+        ]
+
+        self._load_sigma()
+        self._load_abundance()
+
+    def _load_abundance(self, model="angr"):
+        """
+        Load the base abundance for the given model.
+        Only needed in the precalc.
+        """
+        with open(
+            _get_data_file_path(os.path.join("abundance", "abundances.dat"))
+        ) as f:
+            rows = f.readlines()
+            ele = np.array(rows[0].split(" "), dtype=str)
+            ele = ele[ele != ""][1:]
+            # get rid of \n at the end
+            ele[-1] = ele[-1][:2]
+            vals = np.zeros((7, len(ele)))
+            keys = []
+            for i, row in enumerate(rows[1:8]):
+                l = np.array(row.split(" "), dtype=str)
+                l = l[l != ""]
+                # get rid of \n at the end
+                if l[-1][-2:] == "\n":
+                    l[-1] = l[-1][:2]
+                if l[-1] == "\n":
+                    l = l[:-1]
+                vals[i] = np.array(l[1:], dtype=float)
+                keys.append(l[0][:-1])
+            keys = np.array(keys)
+        vals_all = np.zeros(len(self._absori_elements))
+        for i, element in enumerate(self._absori_elements):
+            assert (
+                element in ele
+            ), f"{element} not a valid element. Valid elements: {ele}"
+
+            idx = np.argwhere(ele == element)[0, 0]
+
+            assert model in keys, f"{model} not a valid name. Valid names: {keys}"
+
+            idy = np.argwhere(keys == model)[0, 0]
+
+            vals_all[i] = vals[idy, idx]
+
+        self.abundance = vals_all
+
+    def _load_sigma(self):
+        """
+        Load the base data for absori.
+        Not the most efficient way but only needed
+        in the precalc.
+        """
+        ion = np.zeros((10, 26, 10))
+        sigma = np.zeros((10, 26, 721))
+        atomicnumber = np.empty(10, dtype=int)
+
+        with fits.open(
+            _get_data_file_path(os.path.join("ionized", "mansig.fits"))
+        ) as f:
+            znumber = f["SIGMAS"].data["Z"]
+            #            ionnumber = f["SIGMAS"].data["ION"]
+            sigmadata = f["SIGMAS"].data["SIGMA"]
+            iondata = f["SIGMAS"].data["IONDATA"]
+
+            energy = f["ENERGIES"].data["ENERGY"]
+
+        currentZ = -1
+        iZ = -1
+        iIon = -1
+        for i in range(len(znumber)):
+            if znumber[i] != currentZ:
+                iZ += 1
+                atomicnumber[iZ] = znumber[i]
+                currentZ = znumber[i]
+                iIon = -1
+            iIon += 1
+            for k in range(10):
+                ion[iZ, iIon, k] = iondata[i][k]
+
+            # change units of coef
+
+            ion[iZ][iIon][1] *= 1.0e10
+            ion[iZ][iIon][3] *= 1.0e04
+            ion[iZ][iIon][4] *= 1.0e-04
+            ion[iZ][iIon][6] *= 1.0e-04
+
+            for k in range(721):
+                sigma[iZ][iIon][k] = sigmadata[i][k] / 6.6e-27
+
+        del znumber
+
+        self.ion = ion
+        self.sigma = sigma
+        self.atomicnumber = atomicnumber
+        self.energy = energy
+
+
+abundance_data = AbundanceData()
 
 
 class Absori(Function1D, metaclass=FunctionMeta):
@@ -32,14 +147,13 @@ class Absori(Function1D, metaclass=FunctionMeta):
             desc : absorbing column density in units of 1e22 particles per cm^2
             initial value : 1.0
             is_normalization : False
-            transformation : log10
             min : 1e-4
             max : 1e4
             delta : 0.1
 
         redshift :
             desc : the redshift of the source
-            initial value : 0.
+            initial value : 1.
             is_normalization : False
             min : 0
             max : 15
@@ -50,7 +164,7 @@ class Absori(Function1D, metaclass=FunctionMeta):
             desc : temperture of the gas in K
             initial value : 10000.0
             is_normalization : False
-            transformation : log10
+
             min : 1e2
             max : 1e9
             delta : 0.1
@@ -59,7 +173,7 @@ class Absori(Function1D, metaclass=FunctionMeta):
             desc : absorber ionization state =L/nR^2
             initial value : 1.0
             is_normalization : False
-            transformation : log10
+
             min : 0.1
             max : 1e3
             delta : 0.1
@@ -113,13 +227,10 @@ class Absori(Function1D, metaclass=FunctionMeta):
             "Fe",
         ]
 
-        # load database for absori
-        (
-            self._ion,
-            self._sigma,
-            self._atomicnumber,
-            self._base_energy,
-        ) = self._load_sigma()
+        self._ion = abundance_data.ion
+        self._sigma = abundance_data.sigma
+        self._atomicnumber = abundance_data.atomicnumber
+        self._base_energy = abundance_data.energy
 
         self._max_atomicnumber = int(np.max(self._atomicnumber))
 
@@ -138,7 +249,10 @@ class Absori(Function1D, metaclass=FunctionMeta):
             self._mask_2[i, n] = True
 
         # build the interpolation of sigma
-        self._interp_sigma = interp1d(self._base_energy, self._sigma, axis=0)
+
+        self._interp_sigma = UnivariateSpline(self._base_energy, self._sigma, axis=0)
+
+        self._sigma_cache = collections.OrderedDict()
 
         # self._interp_sigma = Interp1D(self._base_energy, self._sigma)
 
@@ -146,101 +260,12 @@ class Absori(Function1D, metaclass=FunctionMeta):
         self._deltaE = np.zeros(len(self._base_energy))
         self._deltaE[0] = self._base_energy[1] - self._base_energy[0]
         self._deltaE[-1] = self._base_energy[-1] - self._base_energy[-2]
-        self._deltaE[1:-1] = (
-            self._base_energy[2:] - self._base_energy[0:-2]
-        ) / 2
+        self._deltaE[1:-1] = (self._base_energy[2:] - self._base_energy[0:-2]) / 2
 
         # load abundance
-        self._abundance = self._load_abundance()
+        #        self._abundance = self._load_abundance()
 
-    def _load_sigma(self):
-        """
-        Load the base data for absori.
-        Not the most efficient way but only needed
-        in the precalc.
-        """
-        ion = np.zeros((10, 26, 10))
-        sigma = np.zeros((10, 26, 721))
-        atomicnumber = np.empty(10, dtype=int)
-
-        with fits.open(
-            _get_data_file_path(os.path.join("ionized", "mansig.fits"))
-        ) as f:
-            znumber = f["SIGMAS"].data["Z"]
-            ionnumber = f["SIGMAS"].data["ION"]
-            sigmadata = f["SIGMAS"].data["SIGMA"]
-            iondata = f["SIGMAS"].data["IONDATA"]
-
-            energy = f["ENERGIES"].data["ENERGY"]
-
-        currentZ = -1
-        iZ = -1
-        iIon = -1
-        for i in range(len(znumber)):
-            if znumber[i] != currentZ:
-                iZ += 1
-                atomicnumber[iZ] = znumber[i]
-                currentZ = znumber[i]
-                iIon = -1
-            iIon += 1
-            for k in range(10):
-                ion[iZ, iIon, k] = iondata[i][k]
-
-            # change units of coef
-
-            ion[iZ][iIon][1] *= 1.0e10
-            ion[iZ][iIon][3] *= 1.0e04
-            ion[iZ][iIon][4] *= 1.0e-04
-            ion[iZ][iIon][6] *= 1.0e-04
-
-            for k in range(721):
-                sigma[iZ][iIon][k] = sigmadata[i][k] / 6.6e-27
-
-        return ion, sigma, atomicnumber, energy
-
-    def _load_abundance(self, model="angr"):
-        """
-        Load the base abundance for the given model.
-        Only needed in the precalc.
-        """
-        with open(
-            _get_data_file_path(os.path.join("abundance", "abundances.dat"))
-        ) as f:
-            rows = f.readlines()
-            ele = np.array(rows[0].split(" "), dtype=str)
-            ele = ele[ele != ""][1:]
-            # get rid of \n at the end
-            ele[-1] = ele[-1][:2]
-            vals = np.zeros((7, len(ele)))
-            keys = []
-            for i, row in enumerate(rows[1:8]):
-                l = np.array(row.split(" "), dtype=str)
-                l = l[l != ""]
-                # get rid of \n at the end
-                if l[-1][-2:] == "\n":
-                    l[-1] = l[-1][:2]
-                if l[-1] == "\n":
-                    l = l[:-1]
-                vals[i] = np.array(l[1:], dtype=float)
-                keys.append(l[0][:-1])
-            keys = np.array(keys)
-        vals_all = np.zeros(len(self._absori_elements))
-        for i, element in enumerate(self._absori_elements):
-            assert (
-                element in ele
-            ), f"{element} not a valid element. Valid elements: {ele}"
-
-            idx = np.argwhere(ele == element)[0, 0]
-
-            assert (
-                model in keys
-            ), f"{model} not a valid name. Valid names: {keys}"
-
-            idy = np.argwhere(keys == model)[0, 0]
-
-            vals_all[i] = vals[idy, idx]
-
-        return vals_all
+        self._abundance = abundance_data.abundance
 
     def _set_units(self, x_unit, y_unit):
 
@@ -252,15 +277,11 @@ class Absori(Function1D, metaclass=FunctionMeta):
         self.abundance.unit = astropy_units.dimensionless_unscaled
         self.fe_abundance.unit = astropy_units.dimensionless_unscaled
 
-    def evaluate(
-        self, x, NH, redshift, temp, xi, gamma, abundance, fe_abundance
-    ):
+    def evaluate(self, x, NH, redshift, temp, xi, gamma, abundance, fe_abundance):
         # calc energies with z
         e = x * (1 + redshift)
         # calc opacity
-        opacity = self._calc_opacity(
-            e, temp, xi, gamma, abundance, fe_abundance
-        )
+        opacity = self._calc_opacity(e, temp, xi, gamma, abundance, fe_abundance)
 
         return np.exp(-NH * opacity)
 
@@ -278,8 +299,8 @@ class Absori(Function1D, metaclass=FunctionMeta):
 
         # get abundance TODO check this
         ab = np.copy(self._abundance)
-        ab[2:-1] *= 10 ** abundance  # for elements>He
-        ab[-1] *= 10 ** fe_abundance  # for iron
+        ab[2:-1] *= 10**abundance  # for elements>He
+        ab[-1] *= 10**fe_abundance  # for iron
 
         # weight num by abundance
         num *= ab
@@ -307,10 +328,6 @@ class Absori(Function1D, metaclass=FunctionMeta):
         # for mask false extend the sigma at the highest energy base value with
         # a powerlaw with slope -3
 
-        # return _interp_part2(
-        #     new_sigma, mask1, mask2, self._sigma, self._base_energy, e
-        # )
-
         new_sigma[mask1] = self._sigma[720]
         new_sigma[mask1] *= np.expand_dims(
             np.power((e[mask1] / self._base_energy[-1]), -3.0), axis=(1, 2)
@@ -326,10 +343,9 @@ class Absori(Function1D, metaclass=FunctionMeta):
         Calc the F(E)*deltaE at the grid energies of the base energies.
         """
         try:
-            # print(gamma)
+
             value = self._cache_ion_spec[gamma]
             self._cache_ion_spec.move_to_end(gamma)
-            # print("cache hit")
 
         except KeyError:
 
@@ -356,66 +372,24 @@ class Absori(Function1D, metaclass=FunctionMeta):
 
             value = self._cache_num[key]
             self._cache_num.move_to_end(key)
-            # print("cache hit num")
+
         except KeyError:
 
             spec = self._calc_ion_spec(gamma)
-            # transform temp to units of 10**4 K
-            t4 = 0.0001 * temp
-            tfact = 1.033e-3 / np.sqrt(t4)
 
-            # log of xi
-            if xi <= 0:
-                xil = -100.0
-            else:
-                xil = np.log(xi)
-
-            num = np.zeros((self._max_atomicnumber, len(self._atomicnumber)))
-
-            # loop over all types of atoms in the model
-            e1 = np.exp(-self._ion[:, :, 4] / t4)
-            e2 = np.exp(-self._ion[:, :, 6] / t4)
-            arec = self._ion[:, :, 1] * np.power(
-                t4, -self._ion[:, :, 2]
-            ) + self._ion[:, :, 3] * np.power(t4, -1.5) * e1 * (
-                1.0 + self._ion[:, :, 5] * e2
+            value = _calc_num(
+                temp,
+                xi,
+                self._ion,
+                self._max_atomicnumber,
+                self._atomicnumber,
+                self._mask_2,
+                self._sigma,
+                spec,
+                self._mask_valid,
             )
-            z2 = self._atomicnumber ** 2
-            y = 15.8 * z2 / t4
-            arec2 = tfact * z2 * (1.735 + np.log(y) + 1 / (6.0 * y))
-            arec[self._mask_2] = arec2
 
-            intgral = np.sum(self._sigma.T * spec, axis=2)
-
-            ratio = np.zeros_like(arec)
-
-            ratio[arec != 0] = np.log(
-                3.2749e-6 * intgral[arec != 0] / arec[arec != 0]
-            )
-            # ratio = np.log(3.2749e-6*intgral/arec)
-            # ratio[arec == 0] = 0
-            ratcumsum = np.cumsum(ratio, axis=1)
-
-            mul = ratcumsum + (np.arange(1, self._max_atomicnumber + 1)) * xil
-            mul[~self._mask_valid] = -(10 ** 99)
-            mult = np.max(mul, axis=1)
-            mul = (mul.T - mult).T
-            emul = np.exp(mul)
-            emul[~self._mask_valid] = 0
-
-            s = np.sum(emul, axis=1)
-
-            s += np.exp(-mult)
-            num[0] = -mult - np.log(s)
-            for j in range(1, 26):
-                num[j] = num[j - 1] + ratio[:, j - 1] + xil
-
-            num = np.exp(num)
-            num[~self._mask_valid.T] = 0
-
-            value = num
-
-            if len(self._cache_num) > 4:
+            if len(self._cache_num) > 1:
 
                 self._cache_num.popitem(False)
 
@@ -434,7 +408,7 @@ class Integrate_Absori(Absori, metaclass=FunctionMeta):
             desc : local particle density of IGM in units of cm^-3
             initial value : 1e-4
             is_normalization : False
-            transformation : log10
+
             min : 1e-9
             max : 1
             delta : 0.1
@@ -450,7 +424,7 @@ class Integrate_Absori(Absori, metaclass=FunctionMeta):
 
         redshift :
             desc : the redshift of the source
-            initial value : 0.
+            initial value : 1.
             is_normalization : False
             min : 0
             max : 15
@@ -461,7 +435,7 @@ class Integrate_Absori(Absori, metaclass=FunctionMeta):
             desc : temperture of the IGM in K
             initial value : 10000.0
             is_normalization : False
-            transformation : log10
+
             min : 1e2
             max : 1e9
             delta : 0.1
@@ -470,7 +444,7 @@ class Integrate_Absori(Absori, metaclass=FunctionMeta):
             desc : absorber ionization state of the IGM =L/nR^2
             initial value : 1.0
             is_normalization : False
-            transformation : log10
+
             min : 0.1
             max : 1e3
             delta : 0.1
@@ -510,28 +484,14 @@ class Integrate_Absori(Absori, metaclass=FunctionMeta):
         self._c = 2.99792458e5
         self._last_x_sum = 0
         self._last_z = None
-        # self._2last_x_sum = 0
-        # self._2last_z = None
-        # self._3last_x_sum = 0
-        # self._3last_z = None
+
         self._last_sigma_all = None
-        # self._last_sigma_all2 = None
-        # self._last_sigma_all3 = None
+
         self._xsec_precalc = None
-        # self._xsec_precalc2 = None
-        # self._xsec_precalc3 = None
+
         self._last_gamma = None
         self._last_temp = None
         self._last_xi = None
-        # if self.redshift.fixed == True:
-        #    # precalc the sigma interpolation
-        #    nz = int(self.redshift/0.02)
-        #    zsam = self.redshift/nz
-        #    zz = zsam*0.5
-        #    sigma = np.zeros((nz, len(e), self._sigma.shape[1], self._sigma.shape[2]))
-        #    for i in range(nz):
-        #        z1 = zz+1.0
-        #        sigma[i] = self._interpolate_sigma(x*z1)
 
     def _set_units(self, x_unit, y_unit):
         self.n0.unit = astropy_units.cm ** (-3)
@@ -539,24 +499,9 @@ class Integrate_Absori(Absori, metaclass=FunctionMeta):
         self.redshift.unit = astropy_units.dimensionless_unscaled
         self.temp.unit = astropy_units.K
         self.gamma.unit = astropy_units.dimensionless_unscaled
-        self.xi.unit = (
-            astropy_units.erg * astropy_units.cm * astropy_units.s ** (-1)
-        )
+        self.xi.unit = astropy_units.erg * astropy_units.cm * astropy_units.s ** (-1)
         self.abundance.unit = astropy_units.dimensionless_unscaled
         self.fe_abundance.unit = astropy_units.dimensionless_unscaled
-
-    # @lru_cache(maxsize=5)
-    # def _interpolate_sigma_all(self, ekev):
-    #     print("Hallo")
-    #     sigma_all = np.zeros(
-    #         (self._nz, len(ekev), self._sigma.shape[1], self._sigma.shape[2])
-    #     )
-    #     zz = 0.5 * self._zsam
-    #     for i in range(self._nz):
-    #         z1 = zz + 1.0
-    #         sigma_all[i] = self._interpolate_sigma(ekev * z1)
-    #         zz += self._zsam
-    #     return sigma_all
 
     def evaluate(
         self, x, n0, delta, redshift, temp, xi, gamma, abundance, fe_abundance
@@ -565,23 +510,18 @@ class Integrate_Absori(Absori, metaclass=FunctionMeta):
         nz = int(redshift / 0.02)
         zsam = redshift / nz
         zz = zsam * 0.5
-        # spec = self._calc_ion_spec(gamma)
+
         num = self._calc_num(gamma, temp, xi)
 
         # get abundance TODO check this
         ab = np.copy(self._abundance)
-        ab[2:-1] *= 10 ** abundance  # for elements>He
-        ab[-1] *= 10 ** fe_abundance  # for iron
+        ab[2:-1] *= 10**abundance  # for elements>He
+        ab[-1] *= 10**fe_abundance  # for iron
 
         # weight num by abundance
         num_ab = num * ab
         # array with the taus for alle energies
         taus = np.zeros(len(x))
-
-        # self._z = redshift
-        # self._nz = nz
-        # self._zsam = zsam
-        # sigma_all = self._interpolate_sigma_all(x)
 
         ################## Some kind of caching of the last calls (last 3 for the sigma interp, because 3ML calls the function on the edges and on the middle of the ebins for
         ################## simpson integration)... Have to improve this at some point
@@ -598,69 +538,44 @@ class Integrate_Absori(Absori, metaclass=FunctionMeta):
             self._last_temp = temp
             self._last_xi = xi
 
-        new_sigma_interp = True
+        x_str = [str(np.round(xx, 5)) + "_" for xx in x]
 
-        sum_x = _sum(x)
-        # if np.all(self._last_x == x):
-        if self._last_x_sum == sum_x:
-            if self._last_z == redshift:
-                # everything stayed the same
-                # sigma_all = self._last_sigma_all
-                # xsec_precalc = self._xsec_precalc
-                new_sigma_interp = False
-        if new_sigma_interp:
-            self._last_z = redshift
-            self._last_x_sum = sum_x
-        # if np.all(self._2last_x == x):
-        # if self._2last_x_sum == sum_x:
-        #    if self._2last_z == redshift:
-        #        #everything stayed the same
-        #        #xsec_precalc = self._xsec_precalc2
-        #        sigma_all = self._last_sigma_all2
-        #        new_sigma_interp = False
-        # if np.all(self._3last_x == x):
-        # if self._3last_x_sum == sum_x:
-        #    if self._3last_z == redshift:
-        #        #everything stayed the same
-        #        sigma_all = self._last_sigma_all3
-        #        #xsec_precalc = self._xsec_precalc3
-        #        new_sigma_interp = False
-        if new_sigma_interp or new_num:
-            # self._3last_z = self._2last_z
-            # self._3last_x_sum = self._2last_x_sum
-            # self._2last_z = self._last_z
-            # self._2last_x_sum = self._last_x_sum
-            # something changed we have to recalc the sigma interpolation
-            # self._last_sigma_all3 = self._last_sigma_all2
-            # self._last_sigma_all2 = self._last_sigma_all
-            if new_sigma_interp:
-                self._last_sigma_all = np.zeros(
-                    (nz, len(x), self._sigma.shape[1], self._sigma.shape[2])
+        if new_num:
+
+            self._xsec_precalc = np.zeros((nz, len(x)))
+
+            for i in range(nz):
+
+                z1 = zz + 1.0
+
+                key = f"{z1}_{x_str}"
+
+                add_flag = False
+
+                try:
+
+                    value = self._sigma_cache[key]
+                    self._sigma_cache.move_to_end(key)
+
+                except KeyError:
+
+                    value = self._interpolate_sigma(x * z1)
+                    add_flag = True
+
+                self._xsec_precalc[i] = (
+                    np.sum(num_ab * value, axis=(1, 2)) * 6.6e-5 * 1e-22
                 )
 
-            # self._xsec_precalc3 = self._xsec_precalc2
-            # self._xsec_precalc2 = self._xsec_precalc
-            self._xsec_precalc = np.zeros((nz, len(x)))
-            for i in range(nz):
-                z1 = zz + 1.0
-                if new_sigma_interp:
-                    self._last_sigma_all[i] = self._interpolate_sigma(x * z1)
-                    self._xsec_precalc[i] = (
-                        np.sum(num_ab * self._last_sigma_all[i], axis=(1, 2))
-                        * 6.6e-5
-                        * 1e-22
-                    )
-                else:
-
-                    self._xsec_precalc[i] = (
-                        np.sum(num_ab * self._last_sigma_all[i], axis=(1, 2))
-                        * 6.6e-5
-                        * 1e-22
-                    )
-                # self._last_sigma_all[i] = self._interpolate_sigma(x*z1)
                 zz += zsam
-            # xsec_precalc = self._xsec_precalc
-            # sigma_all = self._last_sigma_all
+
+                if add_flag:
+
+                    if len(self._sigma_cache) > 2000:
+
+                        self._sigma_cache.popitem(False)
+
+                    self._sigma_cache[key] = value
+
             zz = zsam * 0.5
         xsec_precalc = self._xsec_precalc
 
@@ -683,27 +598,27 @@ class Integrate_Absori(Absori, metaclass=FunctionMeta):
         return _exp(-taus)
 
 
-@njit(fastmath=True)
-def _sum(x):
+@njit(fastmath=True, cache=True)
+def _sum(x, axis=0):
 
-    return np.sum(x)
+    return np.sum(x, axis=axis)
 
 
-@njit(fastmath=True)
+@njit(fastmath=True, cache=True)
 def _exp(x):
 
     return np.exp(x)
 
 
-@njit(fastmath=True)
+@njit(fastmath=True, cache=True)
 def _integrate_z1(
     nz, zz, n0, delta, omegam, omegal, zsam, taus, c, cmpermpc, h0, xsec_precalc
 ):
     for i in range(nz):
         z1 = zz + 1.0
         # n in this shell
-        n = n0 * z1 ** delta
-        zf = z1 ** 2 / np.sqrt(omegam * z1 ** 3 + omegal)
+        n = n0 * z1**delta
+        zf = z1**2 / np.sqrt(omegam * z1**3 + omegal)
         zf *= zsam * c * n * cmpermpc / h0
 
         # sigma = self._interpolate_sigma(x)
@@ -715,7 +630,7 @@ def _integrate_z1(
     return taus
 
 
-@njit(fastmath=True)
+@njit(fastmath=True, cache=True)
 def _interp_part1(ekev, sigma, base_energy):
 
     e = 1000 * ekev
@@ -724,6 +639,7 @@ def _interp_part1(ekev, sigma, base_energy):
 
     # we have to split in three parts. e>max(base_energy)
     # and e<min(base_energy) and rest
+
     mask1 = e > base_energy[-1]
     mask2 = e < base_energy[0]
 
@@ -732,14 +648,101 @@ def _interp_part1(ekev, sigma, base_energy):
     return e, mask1, mask2, mask3, new_sigma
 
 
-@njit(fastmath=True)
-def _interp_part2(new_sigma, mask1, mask2, sigma, base_energy, e):
+@njit(fastmath=True, error_model="numpy", cache=True)
+def _calc_num(
+    temp, xi, ion, max_atomicnumber, atomicnumber, mask_2, sigma, spec, mask_valid
+):
+    t4 = 0.0001 * temp
+    tfact = 1.033e-3 / np.sqrt(t4)
 
-    new_sigma[mask1] = sigma[720]
-    new_sigma[mask1] *= np.expand_dims(
-        np.power((e[mask1] / base_energy[-1]), -3.0), axis=(1, 2)
-    )
+    # log of xi
+    if xi <= 0:
+        xil = -100.0
+    else:
+        xil = np.log(xi)
 
-    new_sigma[mask2] = sigma[0]
+    num = np.zeros((max_atomicnumber, len(atomicnumber)))
 
-    return new_sigma
+    # loop over all types of atoms in the model
+    e1 = np.exp(-ion[:, :, 4] / t4)
+    e2 = np.exp(-ion[:, :, 6] / t4)
+    arec = ion[:, :, 1] * np.power(t4, -ion[:, :, 2]) + ion[:, :, 3] * np.power(
+        t4, -1.5
+    ) * e1 * (1.0 + ion[:, :, 5] * e2)
+
+    z2 = atomicnumber**2
+    y = 15.8 * z2 / t4
+    arec2 = tfact * z2 * (1.735 + np.log(y) + 1 / (6.0 * y))
+
+    # print(arec.shape)
+    # print(arec2.shape)
+    # print(mask_2)
+
+    idx = 0
+    for i in range(mask_2.shape[0]):
+        for j in range(mask_2.shape[1]):
+            if mask_2[i, j]:
+                arec[i, j] = arec2[idx]
+                idx += 1
+
+    #    arec[mask_2] = arec2
+
+    intgral = np.sum(sigma.T * spec, axis=2)
+
+    ratio = np.zeros_like(arec)
+
+    for i in range(arec.shape[0]):
+        for j in range(arec.shape[1]):
+            ratio[i, j] = np.log(3.2749e-6 * intgral[i, j] / arec[i, j])
+
+    #    ratio[arec != 0] = np.log(3.2749e-6 * intgral[arec != 0] / arec[arec != 0])
+    # ratio = np.log(3.2749e-6*intgral/arec)
+    # ratio[arec == 0] = 0
+    ratcumsum = np.zeros((len(atomicnumber), max_atomicnumber))
+    for i in range(len(atomicnumber)):
+        ratcumsum[i, :] = np.cumsum(ratio[i])
+
+    mul = ratcumsum + (np.arange(1, max_atomicnumber + 1)) * xil
+
+    idx = 0
+    for i in range(mask_valid.shape[0]):
+        for j in range(mask_valid.shape[1]):
+            if not mask_valid[i, j]:
+
+                mul[i, j] = -(10**99)
+
+    #    mul[~mask_valid] = -(10 ** 99)
+
+    mult = np.empty(len(atomicnumber))
+
+    for i in range(len(atomicnumber)):
+
+        mult[i] = np.max(mul[i, :])
+
+    #    mult = np.max(mul, axis=1)
+    mul = (mul.T - mult).T
+    emul = np.exp(mul)
+    # emul[~mask_valid] = 0
+
+    for i in range(mask_valid.shape[0]):
+        for j in range(mask_valid.shape[1]):
+            if not mask_valid[i, j]:
+
+                emul[i, j] = 0
+
+    s = np.sum(emul, axis=1)
+
+    s += np.exp(-mult)
+    num[0] = -mult - np.log(s)
+    for j in range(1, 26):
+        num[j] = num[j - 1] + ratio[:, j - 1] + xil
+
+    num = np.exp(num)
+    for i in range(mask_valid.shape[0]):
+        for j in range(mask_valid.shape[1]):
+            if not mask_valid[i, j]:
+                num[j, i] = 0
+
+    # num[~mask_valid.T] = 0
+
+    return num
