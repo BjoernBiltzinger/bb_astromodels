@@ -12,6 +12,7 @@ from astropy.io import fits
 from bb_astromodels.utils.data_files import _get_data_file_path
 from bb_astromodels.utils.numba_functions import calc_ion_spec_numba
 from numba import njit, prange
+from numba.np.ufunc import parallel
 from scipy.interpolate import interp1d
 
 from .interp import UnivariateSpline
@@ -514,9 +515,6 @@ class Integrate_Absori(Absori, metaclass=FunctionMeta):
         # array with the taus for alle energies
         taus = np.zeros(len(x))
 
-        ################## Some kind of caching of the last calls (last 3 for the sigma interp, because 3ML calls the function on the edges and on the middle of the ebins for
-        ################## simpson integration)... Have to improve this at some point
-
         if (
             self._last_gamma == gamma
             and self._last_temp == temp
@@ -613,19 +611,18 @@ def _exp(x):
     return np.exp(x)
 
 
-@njit(fastmath=True, cache=True)
+@njit(fastmath=True, cache=True, parallel=False)
 def _integrate_z1(
     nz, zz, n0, delta, omegam, omegal, zsam, taus, c, cmpermpc, h0, xsec_precalc
 ):
     for i in range(nz):
         z1 = zz + 1.0
+
         # n in this shell
+
         n = n0 * z1 ** delta
         zf = z1 ** 2 / np.sqrt(omegam * z1 ** 3 + omegal)
         zf *= zsam * c * n * cmpermpc / h0
-
-        # sigma = self._interpolate_sigma(x)
-        # xsec = np.sum(num_ab*sigma, axis=(1, 2))*6.6e-5*1e-22
 
         taus += xsec_precalc[i] * zf
         zz += zsam
@@ -729,7 +726,6 @@ def _calc_num(
     for i in prange(len(atomicnumber)):
 
         mult[i] = np.max(mul[i, :])
-
 
     emul = np.exp((mul.T - mult).T)
 
