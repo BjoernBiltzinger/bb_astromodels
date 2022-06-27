@@ -228,13 +228,11 @@ class Absori(Function1D, metaclass=FunctionMeta):
         ]
 
         self._ion = abundance_data.ion
-        self._sigma = abundance_data.sigma
+        self._sigma = abundance_data.sigma.T
         self._atomicnumber = abundance_data.atomicnumber
         self._base_energy = abundance_data.energy
 
         self._max_atomicnumber = int(np.max(self._atomicnumber))
-
-        self._sigma = self._sigma.T
 
         self._base_energy = np.array(self._base_energy, dtype=float)
 
@@ -250,11 +248,11 @@ class Absori(Function1D, metaclass=FunctionMeta):
 
         # build the interpolation of sigma
 
-        self._interp_sigma = UnivariateSpline(self._base_energy, self._sigma, axis=0)
+        # self._interp_sigma = UnivariateSpline(self._base_energy, self._sigma, axis=0)
+
+        self._interp_sigma = interp1d(self._base_energy, self._sigma, axis=0)
 
         self._sigma_cache = collections.OrderedDict()
-
-        # self._interp_sigma = Interp1D(self._base_energy, self._sigma)
 
         # precalc the "deltaE" per ebin in the base energy
         self._deltaE = np.zeros(len(self._base_energy))
@@ -315,7 +313,7 @@ class Absori(Function1D, metaclass=FunctionMeta):
         """
         Interpolate sigma for the e values
         """
-        e, mask1, mask2, mask3, new_sigma = _interp_part1(
+        e, mask1, mask2, mask3, new_sigma, pl = _interp_part1(
             ekev, self._sigma, self._base_energy
         )
         # for mask true use simple interpolation between
@@ -328,10 +326,7 @@ class Absori(Function1D, metaclass=FunctionMeta):
         # for mask false extend the sigma at the highest energy base value with
         # a powerlaw with slope -3
 
-        new_sigma[mask1] = self._sigma[720]
-        new_sigma[mask1] *= np.expand_dims(
-            np.power((e[mask1] / self._base_energy[-1]), -3.0), axis=(1, 2)
-        )
+        new_sigma[mask1] *= np.expand_dims(pl, axis=(1, 2))
 
         new_sigma[mask2] = self._sigma[0]
 
@@ -513,13 +508,8 @@ class Integrate_Absori(Absori, metaclass=FunctionMeta):
 
         num = self._calc_num(gamma, temp, xi)
 
-        # get abundance TODO check this
-        ab = np.copy(self._abundance)
-        ab[2:-1] *= 10**abundance  # for elements>He
-        ab[-1] *= 10**fe_abundance  # for iron
+        num_ab = _init_eval(self._abundance, abundance, fe_abundance, num)
 
-        # weight num by abundance
-        num_ab = num * ab
         # array with the taus for alle energies
         taus = np.zeros(len(x))
 
@@ -577,7 +567,6 @@ class Integrate_Absori(Absori, metaclass=FunctionMeta):
                     self._sigma_cache[key] = value
 
             zz = zsam * 0.5
-        xsec_precalc = self._xsec_precalc
 
         #################################################
         taus = _integrate_z1(
@@ -592,10 +581,23 @@ class Integrate_Absori(Absori, metaclass=FunctionMeta):
             self._c,
             self._cmpermpc,
             self._h0,
-            xsec_precalc,
+            self._xsec_precalc,
         )
 
         return _exp(-taus)
+
+
+@njit(fastmath=True, cache=True)
+def _init_eval(abund, abundance, fe_abundance, num):
+
+    ab = np.copy(abund)
+    ab[2:-1] *= np.power(10.0, abundance)  # for elements>He
+    ab[-1] *= np.power(10.0, fe_abundance)  # for iron
+
+    # weight num by abundance
+    num_ab = num * ab
+
+    return num_ab
 
 
 @njit(fastmath=True, cache=True)
@@ -645,7 +647,11 @@ def _interp_part1(ekev, sigma, base_energy):
 
     mask3 = (~mask1) * (~mask2)
 
-    return e, mask1, mask2, mask3, new_sigma
+    pl = np.power((e[mask1] / base_energy[-1]), -3.0)
+
+    new_sigma[mask1] = sigma[720]
+
+    return e, mask1, mask2, mask3, new_sigma, pl
 
 
 @njit(fastmath=True, error_model="numpy", cache=True)
