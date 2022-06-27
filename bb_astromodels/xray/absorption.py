@@ -6,17 +6,13 @@ from dataclasses import dataclass
 import astropy.units as astropy_units
 import numpy as np
 from astromodels.functions.function import Function1D, FunctionMeta
-from astromodels.utils import configuration
 from astropy.io import fits
-# from bb_astromodels.utils.cache import cache_array_method
 from bb_astromodels.utils.data_files import _get_data_file_path
 from bb_astromodels.utils.numba_functions import calc_ion_spec_numba
 from numba import njit, prange
-from numba.np.ufunc import parallel
 from scipy.interpolate import interp1d
 
 from .interp import UnivariateSpline
-from .numba_sum import numba_sum
 from .numba_vector import VectorInt32
 
 # from interpolation import interp
