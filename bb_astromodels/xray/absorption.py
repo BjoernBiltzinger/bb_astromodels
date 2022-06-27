@@ -11,11 +11,12 @@ from astropy.io import fits
 # from bb_astromodels.utils.cache import cache_array_method
 from bb_astromodels.utils.data_files import _get_data_file_path
 from bb_astromodels.utils.numba_functions import calc_ion_spec_numba
-from numba import njit
+from numba import njit, prange
 from scipy.interpolate import interp1d
 
 from .interp import UnivariateSpline
 from .numba_sum import numba_sum
+from .numba_vector import VectorInt32
 
 # from interpolation import interp
 
@@ -297,8 +298,8 @@ class Absori(Function1D, metaclass=FunctionMeta):
 
         # get abundance TODO check this
         ab = np.copy(self._abundance)
-        ab[2:-1] *= 10**abundance  # for elements>He
-        ab[-1] *= 10**fe_abundance  # for iron
+        ab[2:-1] *= 10 ** abundance  # for elements>He
+        ab[-1] *= 10 ** fe_abundance  # for iron
 
         # weight num by abundance
         num *= ab
@@ -619,8 +620,8 @@ def _integrate_z1(
     for i in range(nz):
         z1 = zz + 1.0
         # n in this shell
-        n = n0 * z1**delta
-        zf = z1**2 / np.sqrt(omegam * z1**3 + omegal)
+        n = n0 * z1 ** delta
+        zf = z1 ** 2 / np.sqrt(omegam * z1 ** 3 + omegal)
         zf *= zsam * c * n * cmpermpc / h0
 
         # sigma = self._interpolate_sigma(x)
@@ -654,7 +655,12 @@ def _interp_part1(ekev, sigma, base_energy):
     return e, mask1, mask2, mask3, new_sigma, pl
 
 
-@njit(fastmath=True, error_model="numpy", cache=True)
+@njit(
+    fastmath=True,
+    # error_model="numpy",
+    cache=True,
+    parallel=True,
+)
 def _calc_num(
     temp, xi, ion, max_atomicnumber, atomicnumber, mask_2, sigma, spec, mask_valid
 ):
@@ -676,13 +682,9 @@ def _calc_num(
         t4, -1.5
     ) * e1 * (1.0 + ion[:, :, 5] * e2)
 
-    z2 = atomicnumber**2
+    z2 = atomicnumber ** 2
     y = 15.8 * z2 / t4
     arec2 = tfact * z2 * (1.735 + np.log(y) + 1 / (6.0 * y))
-
-    # print(arec.shape)
-    # print(arec2.shape)
-    # print(mask_2)
 
     idx = 0
     for i in range(mask_2.shape[0]):
@@ -697,44 +699,50 @@ def _calc_num(
 
     ratio = np.zeros_like(arec)
 
-    for i in range(arec.shape[0]):
-        for j in range(arec.shape[1]):
-            ratio[i, j] = np.log(3.2749e-6 * intgral[i, j] / arec[i, j])
+    for i in prange(arec.shape[0]):
+        for j in prange(arec.shape[1]):
+            if arec[i, j] != 0:
+                ratio[i, j] = np.log(3.2749e-6 * intgral[i, j] / arec[i, j])
 
-    #    ratio[arec != 0] = np.log(3.2749e-6 * intgral[arec != 0] / arec[arec != 0])
-    # ratio = np.log(3.2749e-6*intgral/arec)
-    # ratio[arec == 0] = 0
     ratcumsum = np.zeros((len(atomicnumber), max_atomicnumber))
-    for i in range(len(atomicnumber)):
+
+    for i in prange(len(atomicnumber)):
         ratcumsum[i, :] = np.cumsum(ratio[i])
 
     mul = ratcumsum + (np.arange(1, max_atomicnumber + 1)) * xil
+
+    valid_i = VectorInt32(0)
+    valid_j = VectorInt32(0)
 
     idx = 0
     for i in range(mask_valid.shape[0]):
         for j in range(mask_valid.shape[1]):
             if not mask_valid[i, j]:
 
-                mul[i, j] = -(10**99)
+                mul[i, j] = -(10 ** 99)
 
-    #    mul[~mask_valid] = -(10 ** 99)
+                valid_i.append(i)
+                valid_j.append(j)
 
     mult = np.empty(len(atomicnumber))
 
-    for i in range(len(atomicnumber)):
+    for i in prange(len(atomicnumber)):
 
         mult[i] = np.max(mul[i, :])
 
-    #    mult = np.max(mul, axis=1)
-    mul = (mul.T - mult).T
-    emul = np.exp(mul)
-    # emul[~mask_valid] = 0
 
-    for i in range(mask_valid.shape[0]):
-        for j in range(mask_valid.shape[1]):
-            if not mask_valid[i, j]:
+    emul = np.exp((mul.T - mult).T)
 
-                emul[i, j] = 0
+    for i in valid_i.arr:
+        for j in valid_j.arr:
+
+            emul[i, j] = 0
+
+    # for i in range(mask_valid.shape[0]):
+    #     for j in range(mask_valid.shape[1]):
+    #         if not mask_valid[i, j]:
+
+    #             emul[i, j] = 0
 
     s = np.sum(emul, axis=1)
 
@@ -744,11 +752,15 @@ def _calc_num(
         num[j] = num[j - 1] + ratio[:, j - 1] + xil
 
     num = np.exp(num)
-    for i in range(mask_valid.shape[0]):
-        for j in range(mask_valid.shape[1]):
-            if not mask_valid[i, j]:
-                num[j, i] = 0
 
-    # num[~mask_valid.T] = 0
+    for i in valid_i.arr:
+        for j in valid_j.arr:
+
+            num[j, i] = 0
+
+    # for i in range(mask_valid.shape[0]):
+    #     for j in range(mask_valid.shape[1]):
+    #         if not mask_valid[i, j]:
+    #             num[j, i] = 0
 
     return num
