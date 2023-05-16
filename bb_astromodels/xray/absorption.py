@@ -19,7 +19,7 @@ from .numba_vector import VectorInt32
 
 
 class AbundanceData:
-    def __init__(self):
+    def __init__(self, model="angr"):
 
         # the elements in this model
         self._absori_elements = [
@@ -36,7 +36,7 @@ class AbundanceData:
         ]
 
         self._load_sigma()
-        self._load_abundance()
+        self._load_abundance(model=model)
 
     def _load_abundance(self, model="angr"):
         """
@@ -131,7 +131,7 @@ class AbundanceData:
         self.energy = energy
 
 
-abundance_data = AbundanceData()
+#abundance_data = AbundanceData()
 
 
 class Absori(Function1D, metaclass=FunctionMeta):
@@ -225,6 +225,11 @@ class Absori(Function1D, metaclass=FunctionMeta):
             "Fe",
         ]
 
+        self._model_set = False
+
+    def set_abundance_model(self, model="angr"):
+        abundance_data = AbundanceData(model=model)
+
         self._ion = abundance_data.ion
         self._sigma = abundance_data.sigma.T
         self._atomicnumber = abundance_data.atomicnumber
@@ -263,6 +268,8 @@ class Absori(Function1D, metaclass=FunctionMeta):
 
         self._abundance = abundance_data.abundance
 
+        self._model_set = True
+
     def _set_units(self, x_unit, y_unit):
 
         self.NH.unit = astropy_units.cm ** (-2)
@@ -287,6 +294,7 @@ class Absori(Function1D, metaclass=FunctionMeta):
         Calculate the opacity for the given parameters and energies
         """
 
+        assert self._model_set, "You first have to run the set_model function"
         # calc the ionizing spectrum
         # spec = self._calc_ion_spec(gamma)
 
