@@ -294,7 +294,7 @@ class Absori(Function1D, metaclass=FunctionMeta):
         Calculate the opacity for the given parameters and energies
         """
 
-        assert self._model_set, "You first have to run the set_model function"
+        assert self._model_set, "You first have to run the set_abundance_model() function"
         # calc the ionizing spectrum
         # spec = self._calc_ion_spec(gamma)
 
